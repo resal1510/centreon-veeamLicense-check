@@ -1,0 +1,1 @@
+# centreon-veeamLicense-check
