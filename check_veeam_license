@@ -3,10 +3,12 @@
 #
 # Veeam Backup servers licence expiration check
 #
-# Last modified : 06.10.2021
-# Author : ARE
+# Last modified	 : 08.10.2021
+# Author	 : Allan Resin
+# Version	 : 1.5.1
 #
 #####################################################
+
 #Import all needed modules
 from __future__ import print_function
 import sys, getopt
@@ -16,9 +18,27 @@ import time
 import json
 from datetime import datetime
 
+#####################################################
+#
+# Set the URL of the Veeam SPC server + port of the API endpoint
+varURL = "https://URL_VEEAM:1281"
+#
+# Set the username and password for the user that have an access to the API
+varUser = "API_USER"
+varPasswd = "API_USER_PASS"
+#
+# Change the threshold for alerts on Centreon.
+varOk = 15          #Before how many days it will be OK
+varWarning = 15     #After how many days it will be WARNING
+varCritical = 0     #At how many days it will be CRITICAL
+#
+#####################################################
+
+
 #Add the --host argument
 parser=argparse.ArgumentParser()
-parser.add_argument('--host', help='Specify the veeam server that you want to check for the licence.')
+parser.add_argument('--host', help='Specify the veeam server that you want to check for the licence. ex')
+parser.add_argument('--force', nargs='?', default=None, help='If you want to force an hostname, it will override the --host arg. Not mandatory')
 args=parser.parse_args()
 
 #Check to quit the script in case of the arg isn't specified
@@ -28,8 +48,14 @@ if (args.host is None):
   sys.exit(2)
 
 #Set some variables for after
-hostArg = args.host.upper()
 licenceID = None
+
+#Check if the --force argument is provided. If yes, it's used to force another hostname.
+if args.force is not None:
+    hostArg = args.force.upper()
+    pass
+else :
+    hostArg = args.host.upper()
 
 #Create a payload that will ask the API to login and get back the Auth Key
 def apiGet_token():
@@ -38,43 +64,67 @@ def apiGet_token():
     "Authorization": "Bearer",
     "Content-Type": "application/json",
     }
-    data = "grant_type=password&username=USER_VEEAM&password=PASSWD_VEEAM"
-    url = 'https://VEEAM_SPC_URL:1281/token'
+    data = "grant_type=password&username="+varUser+"&password="+varPasswd
+    url = varURL+'/token'
     response = requests.post(url, data=data, headers=headers)
     return response
 
 #Create a payload that will ask the API to get all Veeam Backup servers licence infos
-def apiGet_licenceID(wantedHost, token):
+def apiGet_licenceID(token):
     headers = {
     "Connection": "close",
     "Authorization": "Bearer "+token,
     }
-    url = "https://VEEAM_SPC_URL:1281/v2/licensing/backupserverLicenses"
+    url = varURL+"/v2/licensing/backupserverLicenses"
     response2 = requests.get(url, headers=headers)
     return response2
+
+#Create a payload that will ask the API to get all Veeam Cloud Connect licence infos
+def apiGet_licenceCC(token):
+    headers = {
+    "Connection": "close",
+    "Authorization": "Bearer "+token,
+    }
+    url = varURL+"/v2/licensing/cloudconnectLicenses"
+    response3 = requests.get(url, headers=headers)
+    return response3
 
 #Try/Except for getting API response.
 try:
     r = apiGet_token()
 except requests.exceptions.RequestException as e:
-    print("API CALL FAILED")
+    print("API CALL FAILED ... : ")
     print(e)
-    raise SystemExit(e)
+    raise "API CALL FAILED..."
+    sys.exit(2)
 
 #Load in JSON the response of the API
 data_token = json.loads(r.content)
 
 
-#Try/Except for getting API response. Sent as arg to function --> the --host + token
+#Try/Except for getting API response. Sent as arg to function --> token
 try:
-    r2 = apiGet_licenceID(hostArg, data_token["access_token"])
+    r2 = apiGet_licenceID(data_token["access_token"])
 except requests.exceptions.RequestException as e:
-    print("API CALL FAILED")
+    print("API CALL FAILED ... : ")
     print(e)
-    raise SystemExit(e)
+    raise "API CALL FAILED..."
+    sys.exit(2)
+
+#Try/Except for getting API response. Sent as arg to function --> token
+try:
+    r3 = apiGet_licenceCC(data_token["access_token"])
+except requests.exceptions.RequestException as e:
+    print("API CALL FAILED ... : ")
+    print(e)
+    raise "API CALL FAILED..."
+    sys.exit(2)
 
 #Get licence data in JSON
 data_licences = json.loads(r2.content)
+
+#Get CLoud Connect licence data in JSON
+data_licencesCC = json.loads(r3.content)
 
 #Itterate over the JSON data to take the licence expiration date when "backupServerName" is the same as the --host provided
 for x in data_licences:
@@ -85,8 +135,14 @@ for x in data_licences:
 
 #If no licence found, stop the script
 if (licenceID is None):
-    print("License not found for the given Veeam server. Exiting ...")
-    sys.exit(2)
+    for x in data_licencesCC:
+        if (x['backupServerName'] == hostArg):
+            licenceID = x['id']
+            licenceEXP = x['licenseExpirationDate']
+            pass
+        else:
+            print("Licence not found for the given Veeam server. Exiting ...")
+            sys.exit(1)
 
 #Function that do maths to calculate how many days left before expiration
 def expiryMaths(expiry):
@@ -102,16 +158,16 @@ daysBeforeExpI = int(expiryMaths(licenceEXP))
 #Uncomment this only for debug, to simulate a number of day for the licence expiration
 #daysBeforeExpI = 0
 
-if daysBeforeExpI > 15:
-    print("OK : License expires in : "+str(daysBeforeExpI)+" days.")
+if daysBeforeExpI > varOk:
+    print("OK : Licence expires in : "+str(daysBeforeExpI)+" days.")
     sys.exit(0)
     pass
 
-if daysBeforeExpI < 15:
-    if daysBeforeExpI <= 0:
-        print("CRITICAL : License expires in : "+str(daysBeforeExpI)+" days.")
+if daysBeforeExpI < varWarning:
+    if daysBeforeExpI <= varCritical:
+        print("CRITICAL : Licence expires in : "+str(daysBeforeExpI)+" days.")
         sys.exit(2)
         pass
-    print("WARNING : License expires in : "+str(daysBeforeExpI)+" days.")
+    print("WARNING : Licence expires in : "+str(daysBeforeExpI)+" days.")
     sys.exit(1)
     pass
